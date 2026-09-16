@@ -199,7 +199,11 @@ pub(crate) fn render_sidebar(
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
-    if config.sidebar_top_panel == SidebarTopPanelConfig::Keybinds {
+    // Workspace navigation picks from the list, so the keybinds panel steps
+    // aside while that mode is active.
+    let show_keybinds = config.sidebar_top_panel == SidebarTopPanelConfig::Keybinds
+        && state.selected_workspace_id.is_none();
+    if show_keybinds {
         render_keybinds_panel(buffer, workspace_area, config, state, hits);
     } else {
         render_spaces_list(buffer, workspace_area, snapshot, config, state, hits);
@@ -461,29 +465,54 @@ pub(in crate::client::shell) enum KeybindPanelLine {
     Blank,
 }
 
+/// Cells kept for the label when the widest chord would otherwise fill the row.
+const KEYBIND_MIN_LABEL_WIDTH: u16 = 8;
+
 /// The `?` help groups flattened into sidebar rows, one blank row between groups.
 /// Unbound actions are left out: they have no shortcut to show.
 pub(in crate::client::shell) fn keybind_panel_lines(
     keybinds: &LiveKeybindConfig,
 ) -> Vec<KeybindPanelLine> {
-    let groups = crate::input::keybind_help_groups(&keybinds.keybinds, keybinds.prefix);
+    keybind_panel_lines_from_groups(crate::input::keybind_help_groups(
+        &keybinds.keybinds,
+        keybinds.prefix,
+    ))
+}
+
+fn keybind_panel_lines_from_groups(
+    groups: Vec<crate::input::KeybindHelpGroup>,
+) -> Vec<KeybindPanelLine> {
     let mut lines = Vec::new();
-    for (position, (group, entries)) in groups.into_iter().enumerate() {
-        if position > 0 {
+    for (group, entries) in groups {
+        let entries = entries
+            .into_iter()
+            .filter_map(|(key, label)| {
+                bound_key_parts(&key).map(|key| KeybindPanelLine::Entry {
+                    key,
+                    label: label.into_owned(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            continue;
+        }
+        if !lines.is_empty() {
             lines.push(KeybindPanelLine::Blank);
         }
         lines.push(KeybindPanelLine::Group(group));
-        lines.extend(
-            entries
-                .into_iter()
-                .filter(|(key, _)| key != "unset")
-                .map(|(key, label)| KeybindPanelLine::Entry {
-                    key,
-                    label: label.into_owned(),
-                }),
-        );
+        lines.extend(entries);
     }
     lines
+}
+
+/// Help keys join alternatives with " / " and write "unset" for a missing
+/// binding; keep the bound alternatives, or nothing when none is bound.
+fn bound_key_parts(key: &str) -> Option<String> {
+    let parts = key
+        .split(" / ")
+        .filter(|part| *part != "unset")
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join(" / "))
 }
 
 fn render_keybinds_panel(
@@ -512,9 +541,7 @@ fn render_keybinds_panel(
             .height
             .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
     );
-    hits.workspace_body = body;
-    // No workspace row to reveal here; drop the request so it cannot fire later.
-    std::mem::take(state.reveal_focused_workspace);
+    hits.keybinds_body = body;
 
     let lines = keybind_panel_lines(&config.keybinds);
     let row_heights = vec![1u16; lines.len()];
@@ -523,30 +550,35 @@ fn render_keybinds_panel(
         &row_heights,
         &gaps,
         body.height,
-        *state.workspace_scroll,
+        *state.keybinds_scroll,
     );
-    hits.workspace_max_scroll = metrics.max_offset_from_bottom;
-    hits.workspace_scroll_metrics = Some(metrics);
-    *state.workspace_scroll = metrics
+    hits.keybinds_max_scroll = metrics.max_offset_from_bottom;
+    hits.keybinds_scroll_metrics = Some(metrics);
+    *state.keybinds_scroll = metrics
         .max_offset_from_bottom
         .saturating_sub(metrics.offset_from_bottom);
     let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
     let right = body.x.saturating_add(content_width);
-    // Keys share one column so labels line up; the cap keeps a long chord from
-    // pushing every label off a narrow sidebar.
-    let key_width = lines
+    // A row is one cell of indent, the key column, one space, then the label.
+    // Keys share a column so labels line up. The column fits the widest chord
+    // but always leaves the label a few cells; whatever does not fit ends in
+    // an ellipsis.
+    let natural_key_width = lines
         .iter()
         .filter_map(|line| match line {
             KeybindPanelLine::Entry { key, .. } => Some(display_width(key)),
             _ => None,
         })
         .max()
-        .unwrap_or(0)
-        .min(content_width.saturating_sub(4) / 2) as usize;
+        .unwrap_or(0);
+    let key_width = usize::from(natural_key_width).min(usize::from(
+        content_width.saturating_sub(2 + KEYBIND_MIN_LABEL_WIDTH),
+    ));
+    let label_width = usize::from(content_width).saturating_sub(2 + key_width);
     for (offset, line) in lines
         .iter()
-        .skip(*state.workspace_scroll)
+        .skip(*state.keybinds_scroll)
         .take(body.height as usize)
         .enumerate()
     {
@@ -565,12 +597,13 @@ fn render_keybinds_panel(
             ),
             KeybindPanelLine::Entry { key, label } => {
                 let key = crate::ui::truncate_end(key, key_width);
+                let pad = key_width.saturating_sub(usize::from(display_width(&key)));
                 let x = put_segment(
                     buffer,
                     body.x.saturating_add(1),
                     y,
                     right,
-                    &format!("{key:<key_width$} "),
+                    &format!("{key}{} ", " ".repeat(pad)),
                     Style::default()
                         .fg(palette.mauve)
                         .add_modifier(Modifier::BOLD),
@@ -580,7 +613,7 @@ fn render_keybinds_panel(
                     x,
                     y,
                     right,
-                    label,
+                    &crate::ui::truncate_end(label, label_width),
                     Style::default().fg(palette.text),
                 );
             }
@@ -589,7 +622,7 @@ fn render_keybinds_panel(
 
     if show_scrollbar {
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
-        hits.workspace_scrollbar = track;
+        hits.keybinds_scrollbar = track;
         super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
     }
 }
@@ -944,10 +977,56 @@ mod tests {
         let lines = keybind_panel_lines(&config.keybinds);
 
         assert!(
-            !lines
-                .iter()
-                .any(|line| matches!(line, KeybindPanelLine::Entry { key, .. } if key == "unset")),
+            !lines.iter().any(
+                |line| matches!(line, KeybindPanelLine::Entry { key, .. } if key.contains("unset"))
+            ),
             "unbound actions have no shortcut to show"
+        );
+    }
+
+    fn help_entry(key: &str, label: &'static str) -> (String, std::borrow::Cow<'static, str>) {
+        (key.to_owned(), std::borrow::Cow::Borrowed(label))
+    }
+
+    #[test]
+    fn keybind_panel_lines_drop_the_unset_half_of_a_paired_binding() {
+        let lines = keybind_panel_lines_from_groups(vec![(
+            "navigation",
+            vec![
+                help_entry("prefix+up / unset", "workspace list"),
+                help_entry(
+                    "unset / unset / prefix+k / unset / left / right",
+                    "move focus",
+                ),
+            ],
+        )]);
+
+        let keys = lines
+            .iter()
+            .filter_map(|line| match line {
+                KeybindPanelLine::Entry { key, .. } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["prefix+up", "prefix+k / left / right"]);
+    }
+
+    #[test]
+    fn keybind_panel_lines_drop_groups_with_no_bound_entries() {
+        let lines = keybind_panel_lines_from_groups(vec![
+            ("global", vec![help_entry("ctrl+b", "prefix mode")]),
+            ("panes", vec![help_entry("unset", "close pane")]),
+            ("custom", vec![help_entry("prefix+c", "custom command")]),
+        ]);
+
+        assert!(matches!(lines[0], KeybindPanelLine::Group("global")));
+        assert!(matches!(lines[1], KeybindPanelLine::Entry { ref key, .. } if key == "ctrl+b"));
+        assert!(matches!(lines[2], KeybindPanelLine::Blank));
+        assert!(matches!(lines[3], KeybindPanelLine::Group("custom")));
+        assert_eq!(
+            lines.len(),
+            5,
+            "no header or blank for the empty panes group"
         );
     }
 }
