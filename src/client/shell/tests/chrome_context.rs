@@ -747,9 +747,10 @@ fn navigate_mode_shows_the_spaces_list_over_the_keybinds_panel() {
     let rows = frame_rows(&state.compose(106, 30).expect("navigate sidebar"));
     let text = rows.join("\n");
     assert!(text.contains(" spaces"), "picker needs the list: {text}");
-    assert!(
-        !text.contains(" keybinds\n"),
-        "keybinds header hidden: {text}"
+    assert_eq!(
+        state.hits.keybinds_body,
+        Rect::default(),
+        "keybinds panel steps aside while picking"
     );
     assert!(
         state
@@ -764,12 +765,45 @@ fn navigate_mode_shows_the_spaces_list_over_the_keybinds_panel() {
     assert_eq!(state.mode, ClientShellMode::Terminal);
     let rows = frame_rows(&state.compose(106, 30).expect("keybinds sidebar"));
     let text = rows.join("\n");
-    assert!(
-        text.contains(" keybinds"),
+    assert_ne!(
+        state.hits.keybinds_body,
+        Rect::default(),
         "keybinds return after esc: {text}"
     );
     assert!(
         !text.contains(" spaces"),
         "spaces list gone after esc: {text}"
+    );
+    assert!(
+        state.hits.workspaces.is_empty(),
+        "no workspace rows after esc"
+    );
+}
+
+#[test]
+fn navigate_mode_keeps_the_spaces_list_while_its_target_is_stale() {
+    let mut state = keybinds_panel_state_with_workspaces(3);
+    state.compose(106, 30).expect("expanded sidebar");
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+
+    // The server restarts under the picker: the preview survives, its target
+    // does not, and the mode stays Navigate until the user moves or leaves.
+    let mut rebooted = snapshot();
+    rebooted.boot_id = "boot-b".into();
+    state.set_snapshot(Box::new(rebooted));
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+    let rows = frame_rows(&state.compose(106, 30).expect("navigate sidebar"));
+    let text = rows.join("\n");
+
+    assert!(
+        text.contains(" spaces"),
+        "picker still needs the list: {text}"
+    );
+    assert_eq!(
+        state.hits.keybinds_body,
+        Rect::default(),
+        "keybinds panel stays hidden for the whole of navigate mode"
     );
 }

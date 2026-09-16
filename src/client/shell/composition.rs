@@ -67,6 +67,7 @@ impl ClientShellState {
                 .navigate_workspace_id
                 .as_ref()
                 .filter(|_| valid_navigation_target),
+            navigating: self.mode == ClientShellMode::Navigate,
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
@@ -203,6 +204,7 @@ impl ClientShellState {
                     .navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target),
+                navigating: self.mode == ClientShellMode::Navigate,
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,

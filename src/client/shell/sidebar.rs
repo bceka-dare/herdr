@@ -201,8 +201,8 @@ pub(crate) fn render_sidebar(
         crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
     // Workspace navigation picks from the list, so the keybinds panel steps
     // aside while that mode is active.
-    let show_keybinds = config.sidebar_top_panel == SidebarTopPanelConfig::Keybinds
-        && state.selected_workspace_id.is_none();
+    let show_keybinds =
+        config.sidebar_top_panel == SidebarTopPanelConfig::Keybinds && !state.navigating;
     if show_keybinds {
         render_keybinds_panel(buffer, workspace_area, config, state, hits);
     } else {
