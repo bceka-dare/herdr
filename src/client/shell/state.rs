@@ -18,6 +18,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_max_width: u16,
     pub(super) sidebar_start_collapsed: bool,
     pub(super) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
+    pub(super) sidebar_top_panel: SidebarTopPanelConfig,
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
@@ -99,6 +100,10 @@ pub(super) struct ShellHitMap {
     pub(super) agent_scrollbar: Rect,
     pub(super) agent_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) agent_max_scroll: usize,
+    pub(super) keybinds_body: Rect,
+    pub(super) keybinds_scrollbar: Rect,
+    pub(super) keybinds_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(super) keybinds_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
@@ -191,6 +196,9 @@ pub(super) enum ClientChromeDrag {
         grab_row_offset: u16,
     },
     AgentScrollbar {
+        grab_row_offset: u16,
+    },
+    KeybindsScrollbar {
         grab_row_offset: u16,
     },
     HelpScrollbar {
@@ -861,6 +869,7 @@ pub(crate) struct ClientShellState {
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
+    pub(super) keybinds_scroll: usize,
     pub(super) tab_scroll: usize,
     pub(super) mobile_switcher_scroll: usize,
     pub(super) reveal_focused_workspace: bool,
@@ -1023,6 +1032,7 @@ impl ClientShellState {
             remote_collapsed_groups,
             workspace_scroll: 0,
             agent_scroll: 0,
+            keybinds_scroll: 0,
             tab_scroll: 0,
             mobile_switcher_scroll: 0,
             reveal_focused_workspace: true,
@@ -1207,6 +1217,7 @@ impl ClientShellState {
         self.tab_press = None;
         self.workspace_scroll = 0;
         self.agent_scroll = 0;
+        self.keybinds_scroll = 0;
         self.tab_scroll = 0;
         self.mobile_switcher_scroll = 0;
         self.reveal_focused_workspace = true;

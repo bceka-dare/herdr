@@ -56,6 +56,7 @@ impl ClientShellState {
             remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
+            keybinds_scroll: &mut self.keybinds_scroll,
             tab_scroll: &mut self.tab_scroll,
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
             reveal_focused_tab: &mut self.reveal_focused_tab,
@@ -66,6 +67,7 @@ impl ClientShellState {
                 .navigate_workspace_id
                 .as_ref()
                 .filter(|_| valid_navigation_target),
+            navigating: self.mode == ClientShellMode::Navigate,
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
@@ -191,6 +193,7 @@ impl ClientShellState {
                 remote_collapsed_groups: &self.remote_collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
+                keybinds_scroll: &mut self.keybinds_scroll,
                 tab_scroll: &mut self.tab_scroll,
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
                 reveal_focused_tab: &mut self.reveal_focused_tab,
@@ -201,6 +204,7 @@ impl ClientShellState {
                     .navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target),
+                navigating: self.mode == ClientShellMode::Navigate,
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,

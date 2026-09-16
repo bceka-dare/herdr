@@ -888,6 +888,16 @@
           ]
         },
         {
+          "key": "ui.sidebar_top_panel",
+          "type": "enum",
+          "default": "\"spaces\"",
+          "description": "Expanded sidebar top section. \"spaces\" lists workspaces; \"keybinds\" shows the live keyboard shortcut list.",
+          "values": [
+            "spaces",
+            "keybinds"
+          ]
+        },
+        {
           "key": "ui.mobile_width_threshold",
           "type": "integer",
           "default": "64",

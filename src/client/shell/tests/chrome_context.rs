@@ -523,3 +523,287 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close(
             if params.workspace_id == "ws_1" && params.close_group
     ));
 }
+
+fn keybinds_panel_state() -> ClientShellState {
+    let config = toml::from_str::<Config>(
+        r#"
+[ui]
+sidebar_top_panel = "keybinds"
+"#,
+    )
+    .expect("configured sidebar top panel");
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state
+}
+
+#[test]
+fn keybinds_sidebar_panel_replaces_the_spaces_list() {
+    let mut state = keybinds_panel_state();
+    let frame = state.compose(106, 30).expect("expanded sidebar");
+    let rows = frame_rows(&frame);
+    let text = rows.join("\n");
+
+    assert!(
+        text.contains(" keybinds"),
+        "keybinds header missing: {text}"
+    );
+    assert!(
+        !text.contains(" spaces"),
+        "spaces header still drawn: {text}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("prefix+s") && row.contains("settings")),
+        "binding rows must show the live key and its label: {text}"
+    );
+    assert!(text.contains(" agents"), "agents panel must stay: {text}");
+    assert!(
+        state.hits.workspaces.is_empty(),
+        "no workspace rows to click when keybinds are shown"
+    );
+    assert!(
+        state.hits.keybinds_max_scroll > 0,
+        "the full keybind list must scroll inside the section"
+    );
+    assert_eq!(
+        state.hits.workspace_body,
+        Rect::default(),
+        "no workspace body to scroll while keybinds are shown"
+    );
+}
+
+#[test]
+fn keybinds_sidebar_panel_scrolls_with_the_mouse_wheel() {
+    let mut state = keybinds_panel_state();
+    let first = frame_rows(&state.compose(106, 30).expect("expanded sidebar"));
+    let body = state.hits.keybinds_body;
+    let scrolled =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: body.x,
+            row: body.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(scrolled.repaint);
+    assert_eq!(state.keybinds_scroll, 1);
+    assert_eq!(state.workspace_scroll, 0, "the spaces offset is untouched");
+    let second = frame_rows(&state.compose(106, 30).expect("scrolled sidebar"));
+    let body_row = |rows: &[String], y: u16| {
+        rows[y as usize]
+            .chars()
+            .take(body.width as usize)
+            .collect::<String>()
+    };
+    assert_eq!(
+        body_row(&second, body.y),
+        body_row(&first, body.y + 1),
+        "scrolling one step shifts the list up by one row"
+    );
+}
+
+fn keybinds_panel_state_with_workspaces(count: usize) -> ClientShellState {
+    let mut state = keybinds_panel_state();
+    let mut projected = snapshot();
+    projected.workspaces = (1..=count)
+        .map(|number| {
+            let mut workspace = projected.workspaces[0].clone();
+            workspace.workspace_id = format!("ws_{number}");
+            workspace.number = number;
+            workspace.focused = number == 1;
+            workspace
+        })
+        .collect();
+    state.set_snapshot(Box::new(projected));
+    state
+}
+
+fn wheel_down(state: &mut ClientShellState, body: Rect, steps: usize) {
+    for _ in 0..steps {
+        let outcome =
+            state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: body.x,
+                row: body.y,
+                modifiers: KeyModifiers::empty(),
+            })]);
+        assert!(outcome.repaint, "wheel step must scroll the list");
+    }
+}
+
+#[test]
+fn keybinds_sidebar_panel_keeps_its_scroll_when_the_focused_workspace_changes() {
+    let mut state = keybinds_panel_state_with_workspaces(3);
+    state.compose(106, 30).expect("expanded sidebar");
+    let body = state.hits.keybinds_body;
+    wheel_down(&mut state, body, 3);
+    let before = frame_rows(&state.compose(106, 30).expect("scrolled sidebar"));
+    assert_eq!(state.keybinds_scroll, 3);
+
+    // Focus moves to the last workspace: what happens on prefix+n or a click.
+    state.reveal_workspace("ws_3");
+    let mut projected = snapshot();
+    projected.focused_workspace_id = Some("ws_3".into());
+    projected.workspaces = (1..=3)
+        .map(|number| {
+            let mut workspace = projected.workspaces[0].clone();
+            workspace.workspace_id = format!("ws_{number}");
+            workspace.number = number;
+            workspace.focused = number == 3;
+            workspace
+        })
+        .collect();
+    state.set_snapshot(Box::new(projected));
+    let after = frame_rows(&state.compose(106, 30).expect("refocused sidebar"));
+
+    assert_eq!(
+        state.keybinds_scroll, 3,
+        "workspace focus must not move the keybind list"
+    );
+    let body_row = |rows: &[String], y: u16| {
+        rows[y as usize]
+            .chars()
+            .take(body.width as usize)
+            .collect::<String>()
+    };
+    assert_eq!(body_row(&after, body.y), body_row(&before, body.y));
+}
+
+#[test]
+fn spaces_list_comes_back_revealed_after_the_keybinds_panel_was_scrolled() {
+    let mut state = keybinds_panel_state_with_workspaces(40);
+    state.compose(106, 30).expect("expanded sidebar");
+    let body = state.hits.keybinds_body;
+    wheel_down(&mut state, body, 5);
+    state.compose(106, 30).expect("scrolled keybinds");
+
+    let spaces =
+        toml::from_str::<Config>("[ui]\nsidebar_top_panel = \"spaces\"\n").expect("spaces config");
+    state.config.apply_live_config(&spaces, &[], &[]);
+    let rows = frame_rows(&state.compose(106, 30).expect("spaces sidebar"));
+    let text = rows.join("\n");
+
+    assert!(text.contains(" spaces"), "spaces header missing: {text}");
+    assert_eq!(
+        state.workspace_scroll, 0,
+        "the keybind offset must not leak into the workspace list"
+    );
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.workspace_id == "ws_1"),
+        "the focused workspace must be visible when the list returns: {text}"
+    );
+}
+
+#[test]
+fn keybinds_sidebar_panel_shows_whole_chords_and_ellipsizes_labels() {
+    let mut state = keybinds_panel_state();
+    let rows = frame_rows(&state.compose(106, 30).expect("expanded sidebar"));
+    let body = state.hits.keybinds_body;
+    let text = rows.join("\n");
+    // The scrollbar track takes the last body column; look at the text only.
+    let content_width = body.width - state.hits.keybinds_scrollbar.width;
+    let body_rows = rows
+        .iter()
+        .skip(body.y as usize)
+        .take(body.height as usize)
+        .map(|row| row.chars().take(content_width as usize).collect::<String>())
+        .collect::<Vec<_>>();
+
+    // "reload config" sits in the first group, so it is on screen unscrolled.
+    let reload = body_rows
+        .iter()
+        .find(|row| row.contains("prefix+shift+r"))
+        .unwrap_or_else(|| {
+            panic!("a fourteen-cell chord fits the key column at the default width: {text}")
+        });
+    let label = reload
+        .split("prefix+shift+r")
+        .nth(1)
+        .expect("label after key")
+        .trim();
+    assert!(
+        label == "reload config" || label.ends_with('…'),
+        "a label that does not fit ends with an ellipsis, not a hard clip: {reload:?}"
+    );
+    assert!(
+        !label.is_empty(),
+        "the label column keeps some room: {reload:?}"
+    );
+}
+
+#[test]
+fn navigate_mode_shows_the_spaces_list_over_the_keybinds_panel() {
+    let mut state = keybinds_panel_state_with_workspaces(3);
+    state.compose(106, 30).expect("expanded sidebar");
+
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+    let rows = frame_rows(&state.compose(106, 30).expect("navigate sidebar"));
+    let text = rows.join("\n");
+    assert!(text.contains(" spaces"), "picker needs the list: {text}");
+    assert_eq!(
+        state.hits.keybinds_body,
+        Rect::default(),
+        "keybinds panel steps aside while picking"
+    );
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.workspace_id == "ws_2"),
+        "workspace rows are drawn while picking"
+    );
+
+    state.handle_input_bytes(&[0x1b]);
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    let rows = frame_rows(&state.compose(106, 30).expect("keybinds sidebar"));
+    let text = rows.join("\n");
+    assert_ne!(
+        state.hits.keybinds_body,
+        Rect::default(),
+        "keybinds return after esc: {text}"
+    );
+    assert!(
+        !text.contains(" spaces"),
+        "spaces list gone after esc: {text}"
+    );
+    assert!(
+        state.hits.workspaces.is_empty(),
+        "no workspace rows after esc"
+    );
+}
+
+#[test]
+fn navigate_mode_keeps_the_spaces_list_while_its_target_is_stale() {
+    let mut state = keybinds_panel_state_with_workspaces(3);
+    state.compose(106, 30).expect("expanded sidebar");
+    state.handle_input_bytes(&[0x02]);
+    state.handle_input_bytes(b"w");
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+
+    // The server restarts under the picker: the preview survives, its target
+    // does not, and the mode stays Navigate until the user moves or leaves.
+    let mut rebooted = snapshot();
+    rebooted.boot_id = "boot-b".into();
+    state.set_snapshot(Box::new(rebooted));
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+    let rows = frame_rows(&state.compose(106, 30).expect("navigate sidebar"));
+    let text = rows.join("\n");
+
+    assert!(
+        text.contains(" spaces"),
+        "picker still needs the list: {text}"
+    );
+    assert_eq!(
+        state.hits.keybinds_body,
+        Rect::default(),
+        "keybinds panel stays hidden for the whole of navigate mode"
+    );
+}
