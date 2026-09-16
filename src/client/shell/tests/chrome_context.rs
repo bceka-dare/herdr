@@ -523,3 +523,76 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close(
             if params.workspace_id == "ws_1" && params.close_group
     ));
 }
+
+fn keybinds_panel_state() -> ClientShellState {
+    let config = toml::from_str::<Config>(
+        r#"
+[ui]
+sidebar_top_panel = "keybinds"
+"#,
+    )
+    .expect("configured sidebar top panel");
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state
+}
+
+#[test]
+fn keybinds_sidebar_panel_replaces_the_spaces_list() {
+    let mut state = keybinds_panel_state();
+    let frame = state.compose(106, 30).expect("expanded sidebar");
+    let rows = frame_rows(&frame);
+    let text = rows.join("\n");
+
+    assert!(
+        text.contains(" keybinds"),
+        "keybinds header missing: {text}"
+    );
+    assert!(
+        !text.contains(" spaces"),
+        "spaces header still drawn: {text}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("prefix+s") && row.contains("settings")),
+        "binding rows must show the live key and its label: {text}"
+    );
+    assert!(text.contains(" agents"), "agents panel must stay: {text}");
+    assert!(
+        state.hits.workspaces.is_empty(),
+        "no workspace rows to click when keybinds are shown"
+    );
+    assert!(
+        state.hits.workspace_max_scroll > 0,
+        "the full keybind list must scroll inside the section"
+    );
+}
+
+#[test]
+fn keybinds_sidebar_panel_scrolls_with_the_mouse_wheel() {
+    let mut state = keybinds_panel_state();
+    let first = frame_rows(&state.compose(106, 30).expect("expanded sidebar"));
+    let body = state.hits.workspace_body;
+    let scrolled =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: body.x,
+            row: body.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(scrolled.repaint);
+    assert_eq!(state.workspace_scroll, 1);
+    let second = frame_rows(&state.compose(106, 30).expect("scrolled sidebar"));
+    let body_row = |rows: &[String], y: u16| {
+        rows[y as usize]
+            .chars()
+            .take(body.width as usize)
+            .collect::<String>()
+    };
+    assert_eq!(
+        body_row(&second, body.y),
+        body_row(&first, body.y + 1),
+        "scrolling one step shifts the list up by one row"
+    );
+}
