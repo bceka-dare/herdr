@@ -89,7 +89,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
             .expect("reporter's overflowing strip");
         assert_eq!(
             state.hits.new_tab.right() - state.hits.tab_scroll_left.x,
-            107
+            105
         );
         let rect = state
             .hits
@@ -553,11 +553,32 @@ fn keybinds_sidebar_panel_replaces_the_spaces_list() {
         !text.contains(" spaces"),
         "spaces header still drawn: {text}"
     );
+
+    let body = state.hits.keybinds_body;
+    let content_width = body.width - state.hits.keybinds_scrollbar.width;
+    let body_rows = rows
+        .iter()
+        .skip(body.y as usize)
+        .take(body.height as usize)
+        .map(|row| row.chars().take(content_width as usize).collect::<String>())
+        .collect::<Vec<_>>();
     assert!(
-        rows.iter()
-            .any(|row| row.contains("prefix+s") && row.contains("settings")),
-        "binding rows must show the live key and its label: {text}"
+        body_rows.iter().any(|row| row.trim() == "ctrl+b"),
+        "the prefix header shows the raw combo alone: {text}"
     );
+    let settings = body_rows
+        .iter()
+        .find(|row| row.contains("settings"))
+        .unwrap_or_else(|| panic!("settings row must show the live key and its label: {text}"));
+    assert!(
+        !settings.contains("prefix+"),
+        "the prefix+ tag is stripped once bucketed under prefix shortcuts: {settings}"
+    );
+    assert!(
+        settings.trim_start().starts_with('s'),
+        "settings' bare key leads the row: {settings}"
+    );
+
     assert!(text.contains(" agents"), "agents panel must stay: {text}");
     assert!(
         state.hits.workspaces.is_empty(),
@@ -701,38 +722,80 @@ fn spaces_list_comes_back_revealed_after_the_keybinds_panel_was_scrolled() {
 
 #[test]
 fn keybinds_sidebar_panel_shows_whole_chords_and_ellipsizes_labels() {
-    let mut state = keybinds_panel_state();
-    let rows = frame_rows(&state.compose(106, 30).expect("expanded sidebar"));
-    let body = state.hits.keybinds_body;
-    let text = rows.join("\n");
-    // The scrollbar track takes the last body column; look at the text only.
-    let content_width = body.width - state.hits.keybinds_scrollbar.width;
-    let body_rows = rows
-        .iter()
-        .skip(body.y as usize)
-        .take(body.height as usize)
-        .map(|row| row.chars().take(content_width as usize).collect::<String>())
-        .collect::<Vec<_>>();
+    // A prefix-bound custom command: once bucketed under "prefix shortcuts"
+    // its key strips down to a short "alt+g", so it always renders whole,
+    // while its deliberately long description cannot fit the label column.
+    // Custom commands are advertised by the snapshot (like a real endpoint
+    // would) rather than set in local config, since `set_snapshot` below
+    // reconciles local `[[keys.command]]` entries away in favor of whatever
+    // the snapshot's `commands` list says.
+    let config =
+        toml::from_str::<Config>("[ui]\nsidebar_top_panel = \"keybinds\"\n").expect("config");
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut snap = snapshot();
+    snap.commands = vec![crate::protocol::ClientShellCommand {
+        command_id: "test.long_description".into(),
+        binding_label: "prefix+alt+g".into(),
+        binding_labels: vec!["prefix+alt+g".into()],
+        action: crate::protocol::ClientShellCommandAction::Shell,
+        description: Some(
+            "a description so long it will not fit in the label column at all".into(),
+        ),
+    }];
+    state.set_snapshot(Box::new(snap));
+    state.set_pane_surface(surface());
 
-    // "reload config" sits in the first group, so it is on screen unscrolled.
-    let reload = body_rows
+    state.compose(106, 30).expect("expanded sidebar");
+    let body = state.hits.keybinds_body;
+    // The custom command sits partway down the prefix shortcuts bucket;
+    // scroll one step at a time until it enters the visible window.
+    let content_width = body.width - state.hits.keybinds_scrollbar.width;
+    let max_scroll = state.hits.keybinds_max_scroll;
+    let mut body_rows = Vec::new();
+    let mut text = String::new();
+    let mut found = false;
+    for step in 0..=max_scroll {
+        if step > 0 {
+            wheel_down(&mut state, body, 1);
+        }
+        let rows = frame_rows(&state.compose(106, 30).expect("scrolled keybinds"));
+        text = rows.join("\n");
+        body_rows = rows
+            .iter()
+            .skip(body.y as usize)
+            .take(body.height as usize)
+            .map(|row| row.chars().take(content_width as usize).collect::<String>())
+            .collect::<Vec<_>>();
+        if body_rows.iter().any(|row| row.contains("alt+g")) {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "the custom command's stripped key never scrolls into the key column: {text}"
+    );
+
+    let command_row = body_rows
         .iter()
-        .find(|row| row.contains("prefix+shift+r"))
-        .unwrap_or_else(|| {
-            panic!("a fourteen-cell chord fits the key column at the default width: {text}")
-        });
-    let label = reload
-        .split("prefix+shift+r")
+        .find(|row| row.contains("alt+g"))
+        .expect("alt+g row located above");
+    assert!(
+        !command_row.contains("prefix+"),
+        "the prefix+ tag is stripped once bucketed under prefix shortcuts: {command_row}"
+    );
+    let label = command_row
+        .split("alt+g")
         .nth(1)
         .expect("label after key")
         .trim();
     assert!(
-        label == "reload config" || label.ends_with('…'),
-        "a label that does not fit ends with an ellipsis, not a hard clip: {reload:?}"
+        label.ends_with('…'),
+        "a label that does not fit ends with an ellipsis, not a hard clip: {command_row:?}"
     );
     assert!(
         !label.is_empty(),
-        "the label column keeps some room: {reload:?}"
+        "the label column keeps some room: {command_row:?}"
     );
 }
 

@@ -173,7 +173,7 @@ fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
     assert!(!text.contains("1 1"));
     assert_eq!(
         frame.cursor.as_ref().map(|cursor| (cursor.x, cursor.y)),
-        Some((27, 2))
+        Some((29, 2))
     );
 }
 

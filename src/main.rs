@@ -230,7 +230,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 [ui]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)
-# sidebar_width = 26
+# sidebar_width = 28
 
 # Minimum sidebar width when expanded (columns)
 # sidebar_min_width = 18
