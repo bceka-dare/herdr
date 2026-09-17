@@ -35,7 +35,7 @@ fn mouse_hits_use_stable_workspace_tab_and_pane_ids() {
 
     let pane = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: 27,
+        column: 29,
         row: 1,
         modifiers: KeyModifiers::empty(),
     })]);
