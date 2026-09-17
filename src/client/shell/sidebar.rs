@@ -468,38 +468,83 @@ pub(in crate::client::shell) enum KeybindPanelLine {
 /// Cells kept for the label when the widest chord would otherwise fill the row.
 const KEYBIND_MIN_LABEL_WIDTH: u16 = 8;
 
-/// The `?` help groups flattened into sidebar rows, one blank row between groups.
-/// Unbound actions are left out: they have no shortcut to show.
+/// Prefix-bound shortcuts show as "prefix+x" in the shared `?` help groups;
+/// once bucketed under the "prefix shortcuts" header that tag is redundant.
+const PREFIX_KEY_TAG: &str = "prefix+";
+
+/// The literal label the shared `?` help groups use for the raw prefix combo
+/// itself (see `crate::input::keybind_help_groups`); superseded here by the
+/// dedicated "prefix" header, so it is dropped before bucketing.
+const PREFIX_MODE_LABEL: &str = "prefix mode";
+
+/// The `?` help groups flattened and rebucketed by how a shortcut is
+/// triggered (prefix chord vs. a bare or modified key), one blank row
+/// between groups. Unbound actions are left out: they have no shortcut to
+/// show.
 pub(in crate::client::shell) fn keybind_panel_lines(
     keybinds: &LiveKeybindConfig,
 ) -> Vec<KeybindPanelLine> {
-    keybind_panel_lines_from_groups(crate::input::keybind_help_groups(
-        &keybinds.keybinds,
+    keybind_panel_lines_from_groups(
+        crate::input::keybind_help_groups(&keybinds.keybinds, keybinds.prefix),
         keybinds.prefix,
-    ))
+    )
 }
 
 fn keybind_panel_lines_from_groups(
     groups: Vec<crate::input::KeybindHelpGroup>,
+    prefix: (crossterm::event::KeyCode, crossterm::event::KeyModifiers),
 ) -> Vec<KeybindPanelLine> {
-    let mut lines = Vec::new();
-    for (group, entries) in groups {
-        let entries = entries
-            .into_iter()
-            .filter_map(|(key, label)| {
-                bound_key_parts(&key).map(|key| KeybindPanelLine::Entry {
-                    key,
-                    label: label.into_owned(),
-                })
-            })
-            .collect::<Vec<_>>();
+    let mut prefix_shortcuts = Vec::new();
+    let mut ctrl = Vec::new();
+    let mut alt = Vec::new();
+    let mut shift = Vec::new();
+    let mut direct = Vec::new();
+
+    for (_, entries) in groups {
+        for (key, label) in entries {
+            if label.as_ref() == PREFIX_MODE_LABEL {
+                continue;
+            }
+            let Some(key) = bound_key_parts(&key) else {
+                continue;
+            };
+            let label = label.into_owned();
+            if let Some(rhs) = key.strip_prefix(PREFIX_KEY_TAG) {
+                prefix_shortcuts.push(KeybindPanelLine::Entry {
+                    key: rhs.to_string(),
+                    label,
+                });
+            } else if key.starts_with("ctrl+") {
+                ctrl.push(KeybindPanelLine::Entry { key, label });
+            } else if key.starts_with("alt+") {
+                alt.push(KeybindPanelLine::Entry { key, label });
+            } else if key.starts_with("shift+") {
+                shift.push(KeybindPanelLine::Entry { key, label });
+            } else {
+                direct.push(KeybindPanelLine::Entry { key, label });
+            }
+        }
+    }
+
+    let mut lines = vec![
+        KeybindPanelLine::Group("prefix"),
+        KeybindPanelLine::Entry {
+            key: crate::config::format_key_combo(prefix),
+            label: String::new(),
+        },
+    ];
+    for (name, entries) in [
+        ("prefix shortcuts", prefix_shortcuts),
+        ("ctrl", ctrl),
+        ("alt", alt),
+        ("shift", shift),
+        ("direct", direct),
+    ] {
         if entries.is_empty() {
             continue;
         }
-        if !lines.is_empty() {
-            lines.push(KeybindPanelLine::Blank);
-        }
-        lines.push(KeybindPanelLine::Group(group));
+        lines.push(KeybindPanelLine::Blank);
+        lines.push(KeybindPanelLine::Group(name));
         lines.extend(entries);
     }
     lines
@@ -926,30 +971,62 @@ pub(in crate::client::shell) fn render_workspace_rows(
 mod tests {
     use super::*;
 
+    fn default_prefix_combo() -> (crossterm::event::KeyCode, crossterm::event::KeyModifiers) {
+        (
+            crossterm::event::KeyCode::Char('b'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )
+    }
+
     #[test]
-    fn keybind_panel_lines_put_each_group_header_before_its_entries() {
+    fn keybind_panel_lines_start_with_the_prefix_header_then_grouped_entries() {
         let config = ClientShellConfig::from_config(&Config::default());
         let lines = keybind_panel_lines(&config.keybinds);
 
         assert!(matches!(
             lines.first(),
-            Some(KeybindPanelLine::Group("global"))
+            Some(KeybindPanelLine::Group("prefix"))
         ));
+        assert!(
+            matches!(lines.get(1), Some(KeybindPanelLine::Entry { key, label }) if key == "ctrl+b" && label.is_empty()),
+            "the header shows the raw prefix combo with no label"
+        );
         assert!(!matches!(lines.last(), Some(KeybindPanelLine::Blank)));
+
         let settings = lines
             .iter()
             .position(
-                |line| matches!(line, KeybindPanelLine::Entry { label, .. } if label == "settings"),
+                |line| matches!(line, KeybindPanelLine::Entry { key, label } if key == "s" && label == "settings"),
             )
-            .expect("settings entry");
-        let panes = lines
+            .expect("settings entry, tagged bare since it is a prefix shortcut");
+        let prefix_shortcuts = lines
             .iter()
-            .position(|line| matches!(line, KeybindPanelLine::Group("panes")))
-            .expect("panes group");
+            .position(|line| matches!(line, KeybindPanelLine::Group("prefix shortcuts")))
+            .expect("prefix shortcuts group");
+        let cycle_pane = lines
+            .iter()
+            .position(
+                |line| matches!(line, KeybindPanelLine::Entry { label, .. } if label == "cycle pane"),
+            )
+            .expect("cycle pane entry, a bare tab/shift+tab hint with no modifier tag");
+        let direct = lines
+            .iter()
+            .position(|line| matches!(line, KeybindPanelLine::Group("direct")))
+            .expect("direct group for keys with no prefix or recognized modifier tag");
+
         assert!(
-            settings < panes,
-            "global entries come before the panes group"
+            prefix_shortcuts < settings,
+            "the prefix shortcuts header comes before its entries"
         );
+        assert!(
+            settings < direct,
+            "prefix shortcuts are grouped before the direct bucket"
+        );
+        assert!(
+            direct < cycle_pane,
+            "the direct header comes before its entries"
+        );
+
         let groups = lines
             .iter()
             .filter(|line| matches!(line, KeybindPanelLine::Group(_)))
@@ -989,17 +1066,20 @@ mod tests {
     }
 
     #[test]
-    fn keybind_panel_lines_drop_the_unset_half_of_a_paired_binding() {
-        let lines = keybind_panel_lines_from_groups(vec![(
-            "navigation",
-            vec![
-                help_entry("prefix+up / unset", "workspace list"),
-                help_entry(
-                    "unset / unset / prefix+k / unset / left / right",
-                    "move focus",
-                ),
-            ],
-        )]);
+    fn keybind_panel_lines_drop_the_unset_half_of_a_paired_binding_and_strip_the_prefix_tag() {
+        let lines = keybind_panel_lines_from_groups(
+            vec![(
+                "navigation",
+                vec![
+                    help_entry("prefix+up / unset", "workspace list"),
+                    help_entry(
+                        "unset / unset / prefix+k / unset / left / right",
+                        "move focus",
+                    ),
+                ],
+            )],
+            default_prefix_combo(),
+        );
 
         let keys = lines
             .iter()
@@ -1008,25 +1088,39 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(keys, vec!["prefix+up", "prefix+k / left / right"]);
+        // The header's own "ctrl+b" entry always leads; both remaining entries
+        // start with "prefix+" once the unset half is dropped, so both land in
+        // the prefix shortcuts bucket with that tag stripped.
+        assert_eq!(keys, vec!["ctrl+b", "up", "k / left / right"]);
     }
 
     #[test]
-    fn keybind_panel_lines_drop_groups_with_no_bound_entries() {
-        let lines = keybind_panel_lines_from_groups(vec![
-            ("global", vec![help_entry("ctrl+b", "prefix mode")]),
-            ("panes", vec![help_entry("unset", "close pane")]),
-            ("custom", vec![help_entry("prefix+c", "custom command")]),
-        ]);
+    fn keybind_panel_lines_drop_buckets_with_no_bound_entries() {
+        let lines = keybind_panel_lines_from_groups(
+            vec![
+                ("global", vec![help_entry("ctrl+b", "prefix mode")]),
+                ("panes", vec![help_entry("unset", "close pane")]),
+                ("custom", vec![help_entry("prefix+c", "custom command")]),
+            ],
+            default_prefix_combo(),
+        );
 
-        assert!(matches!(lines[0], KeybindPanelLine::Group("global")));
+        assert!(matches!(lines[0], KeybindPanelLine::Group("prefix")));
         assert!(matches!(lines[1], KeybindPanelLine::Entry { ref key, .. } if key == "ctrl+b"));
         assert!(matches!(lines[2], KeybindPanelLine::Blank));
-        assert!(matches!(lines[3], KeybindPanelLine::Group("custom")));
+        assert!(matches!(
+            lines[3],
+            KeybindPanelLine::Group("prefix shortcuts")
+        ));
+        assert!(matches!(
+            lines[4],
+            KeybindPanelLine::Entry { ref key, ref label }
+                if key == "c" && label == "custom command"
+        ));
         assert_eq!(
             lines.len(),
             5,
-            "no header or blank for the empty panes group"
+            "no header or blank for the empty ctrl/alt/shift/direct buckets"
         );
     }
 }
